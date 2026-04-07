@@ -1,0 +1,15 @@
+node_modules/
+dist/
+.env
+.env.dev
+.env.prod
+*.db
+*.db-journal
+dev-data/
+/tmp/
+*.log
+.DS_Store
+coverage/
+.turbo/
+*.tsbuildinfo
+packages/ui/dist/

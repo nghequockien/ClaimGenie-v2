@@ -1,0 +1,170 @@
+version: '3.9'
+
+# ─── DEVELOPMENT COMPOSE — uses SQLite, hot-reload, no reverse proxy ──────────
+# Usage: pnpm docker:dev  OR  docker-compose -f infrastructure/docker/docker-compose.dev.yml up
+
+name: insurance-mas-dev
+
+x-agent-common: &agent-common
+  build:
+    context: ../../
+    dockerfile: infrastructure/docker/Dockerfile.agent
+  volumes:
+    - ../../packages:/app/packages
+    - ../../tsconfig.base.json:/app/tsconfig.base.json
+    - agent_uploads:/tmp/uploads
+    - dev_db:/app/dev-data
+  env_file: ../../.env.dev
+  environment:
+    - NODE_ENV=development
+    - DATABASE_PROVIDER=sqlite
+    - DATABASE_URL=file:/app/dev-data/dev.db
+  depends_on:
+    db-init:
+      condition: service_completed_successfully
+  restart: unless-stopped
+  networks:
+    - mas-net
+
+services:
+  # ── DB INIT (runs migrations + seed) ────────────────────────────────────────
+  db-init:
+    <<: *agent-common
+    container_name: mas-db-init
+    command: >
+      sh -c "cp /app/packages/shared/prisma/schema.dev.prisma /app/packages/shared/prisma/schema.prisma &&
+             cd /app/packages/shared &&
+             npx prisma generate &&
+             npx prisma migrate deploy &&
+             npx ts-node prisma/seed.ts"
+    restart: no
+
+  # ── CLAIMS RECEIVER ─────────────────────────────────────────────────────────
+  claims-receiver:
+    <<: *agent-common
+    container_name: mas-claims-receiver
+    command: sh -c "cd /app/packages/agents/claims-receiver && npx ts-node-dev --respawn --transpile-only src/index.ts"
+    ports:
+      - "4001:4001"
+    environment:
+      - PORT=4001
+      - NODE_ENV=development
+      - DATABASE_PROVIDER=sqlite
+      - DATABASE_URL=file:/app/dev-data/dev.db
+
+  # ── OCR PROCESSOR ───────────────────────────────────────────────────────────
+  ocr-processor:
+    <<: *agent-common
+    container_name: mas-ocr-processor
+    command: sh -c "cd /app/packages/agents/ocr-processor && npx ts-node-dev --respawn --transpile-only src/index.ts"
+    ports:
+      - "4002:4002"
+    environment:
+      - PORT=4002
+      - NODE_ENV=development
+      - DATABASE_PROVIDER=sqlite
+      - DATABASE_URL=file:/app/dev-data/dev.db
+
+  # ── ICD CONVERTER ───────────────────────────────────────────────────────────
+  icd-converter:
+    <<: *agent-common
+    container_name: mas-icd-converter
+    command: sh -c "cd /app/packages/agents/icd-converter && npx ts-node-dev --respawn --transpile-only src/index.ts"
+    ports:
+      - "4003:4003"
+    environment:
+      - PORT=4003
+      - NODE_ENV=development
+      - DATABASE_PROVIDER=sqlite
+      - DATABASE_URL=file:/app/dev-data/dev.db
+
+  # ── CUSTOMER VERIFICATION ───────────────────────────────────────────────────
+  customer-verification:
+    <<: *agent-common
+    container_name: mas-customer-verification
+    command: sh -c "cd /app/packages/agents/customer-verification && npx ts-node-dev --respawn --transpile-only src/index.ts"
+    ports:
+      - "4004:4004"
+    environment:
+      - PORT=4004
+      - NODE_ENV=development
+      - DATABASE_PROVIDER=sqlite
+      - DATABASE_URL=file:/app/dev-data/dev.db
+
+  # ── FRAUD DETECTION ─────────────────────────────────────────────────────────
+  fraud-detection:
+    <<: *agent-common
+    container_name: mas-fraud-detection
+    command: sh -c "cd /app/packages/agents/fraud-detection && npx ts-node-dev --respawn --transpile-only src/index.ts"
+    ports:
+      - "4005:4005"
+    environment:
+      - PORT=4005
+      - NODE_ENV=development
+      - DATABASE_PROVIDER=sqlite
+      - DATABASE_URL=file:/app/dev-data/dev.db
+
+  # ── PAYMENT GENERATOR ───────────────────────────────────────────────────────
+  payment-generator:
+    <<: *agent-common
+    container_name: mas-payment-generator
+    command: sh -c "cd /app/packages/agents/payment-generator && npx ts-node-dev --respawn --transpile-only src/index.ts"
+    ports:
+      - "4006:4006"
+    environment:
+      - PORT=4006
+      - NODE_ENV=development
+      - DATABASE_PROVIDER=sqlite
+      - DATABASE_URL=file:/app/dev-data/dev.db
+    depends_on:
+      - claims-receiver
+      - ocr-processor
+      - icd-converter
+      - customer-verification
+      - fraud-detection
+
+  # ── API GATEWAY ─────────────────────────────────────────────────────────────
+  gateway:
+    <<: *agent-common
+    container_name: mas-gateway
+    command: sh -c "cd /app/packages/gateway && npx ts-node-dev --respawn --transpile-only src/index.ts"
+    ports:
+      - "4000:4000"
+    environment:
+      - GATEWAY_PORT=4000
+      - CLAIMS_RECEIVER_HOST=claims-receiver
+      - OCR_PROCESSOR_HOST=ocr-processor
+      - ICD_CONVERTER_HOST=icd-converter
+      - CUSTOMER_VERIFICATION_HOST=customer-verification
+      - FRAUD_DETECTION_HOST=fraud-detection
+      - PAYMENT_GENERATOR_HOST=payment-generator
+      - CORS_ORIGIN=http://localhost:3000
+    depends_on:
+      - claims-receiver
+      - payment-generator
+
+  # ── UI (Vite dev server) ────────────────────────────────────────────────────
+  ui:
+    build:
+      context: ../../
+      dockerfile: infrastructure/docker/Dockerfile.ui.dev
+    container_name: mas-ui
+    volumes:
+      - ../../packages/ui:/app/packages/ui
+      - /app/packages/ui/node_modules
+    ports:
+      - "3000:3000"
+    environment:
+      - VITE_API_URL=http://localhost:4000/api
+    depends_on:
+      - gateway
+    networks:
+      - mas-net
+
+networks:
+  mas-net:
+    driver: bridge
+
+volumes:
+  agent_uploads:
+  dev_db:

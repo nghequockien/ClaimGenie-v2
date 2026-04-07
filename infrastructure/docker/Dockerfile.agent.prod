@@ -1,0 +1,80 @@
+# ─── Agent Dockerfile for PRODUCTION ─────────────────────────────────────────
+# Multi-stage: builder → runtime
+# ARG AGENT: e.g. claims-receiver
+
+ARG AGENT=claims-receiver
+ARG NODE_VERSION=20
+
+# ── Stage 1: deps ─────────────────────────────────────────────────────────────
+FROM node:${NODE_VERSION}-alpine AS deps
+
+RUN npm install -g pnpm@9
+WORKDIR /app
+
+COPY pnpm-workspace.yaml package.json tsconfig.base.json ./
+COPY packages/shared/package.json ./packages/shared/
+COPY packages/shared/prisma ./packages/shared/prisma/
+COPY packages/gateway/package.json ./packages/gateway/
+
+# Copy all agent package.jsons
+COPY packages/agents/claims-receiver/package.json ./packages/agents/claims-receiver/
+COPY packages/agents/ocr-processor/package.json ./packages/agents/ocr-processor/
+COPY packages/agents/icd-converter/package.json ./packages/agents/icd-converter/
+COPY packages/agents/customer-verification/package.json ./packages/agents/customer-verification/
+COPY packages/agents/fraud-detection/package.json ./packages/agents/fraud-detection/
+COPY packages/agents/payment-generator/package.json ./packages/agents/payment-generator/
+
+RUN pnpm install --frozen-lockfile
+
+# ── Stage 2: builder ──────────────────────────────────────────────────────────
+FROM deps AS builder
+
+COPY . .
+
+# Generate Prisma client
+RUN cd packages/shared && npx prisma generate
+
+# Build shared first
+RUN cd packages/shared && pnpm build
+
+# Build the specific agent
+ARG AGENT
+RUN cd packages/agents/${AGENT} && pnpm build
+
+# ── Stage 3: shared (for migrations only) ─────────────────────────────────────
+FROM builder AS shared
+
+# ── Stage 4: runtime ──────────────────────────────────────────────────────────
+FROM node:${NODE_VERSION}-alpine AS runtime
+
+RUN npm install -g pnpm@9
+RUN apk add --no-cache dumb-init
+
+WORKDIR /app
+
+ARG AGENT
+
+# Copy workspace config
+COPY pnpm-workspace.yaml package.json tsconfig.base.json ./
+
+# Copy package files
+COPY packages/shared/package.json ./packages/shared/
+COPY packages/shared/prisma ./packages/shared/prisma/
+COPY packages/agents/${AGENT}/package.json ./packages/agents/${AGENT}/
+
+# Install production deps only
+RUN pnpm install --prod --frozen-lockfile
+
+# Copy built artifacts
+COPY --from=builder /app/packages/shared/dist ./packages/shared/dist
+COPY --from=builder /app/packages/agents/${AGENT}/dist ./packages/agents/${AGENT}/dist
+COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
+COPY --from=builder /app/packages/shared/node_modules/.prisma ./packages/shared/node_modules/.prisma
+
+RUN addgroup -g 1001 -S nodejs && adduser -S nodejs -u 1001
+USER nodejs
+
+EXPOSE 4001 4002 4003 4004 4005 4006
+
+ENTRYPOINT ["dumb-init", "--"]
+CMD ["node", "/app/packages/agents/${AGENT}/dist/index.js"]

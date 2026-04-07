@@ -1,0 +1,7 @@
+packages:
+  - "packages/shared"
+  - "packages/auth"
+  - "packages/gateway"
+  - "packages/agents/*"
+  - "packages/mcp-servers/*"
+  - "packages/ui"

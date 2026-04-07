@@ -1,0 +1,34 @@
+# ─── Agent base image for DEVELOPMENT (hot reload via ts-node-dev) ───────────
+FROM node:20-alpine
+
+RUN apk add --no-cache python3 make g++ git
+
+# Install pnpm
+RUN npm install -g pnpm@9
+
+WORKDIR /app
+
+# Copy workspace config
+COPY pnpm-workspace.yaml package.json tsconfig.base.json ./
+
+# Copy all packages (volumes override in dev)
+COPY packages/shared/package.json ./packages/shared/
+COPY packages/shared/prisma ./packages/shared/prisma/
+COPY packages/gateway/package.json ./packages/gateway/
+COPY packages/agents/claims-receiver/package.json ./packages/agents/claims-receiver/
+COPY packages/agents/ocr-processor/package.json ./packages/agents/ocr-processor/
+COPY packages/agents/icd-converter/package.json ./packages/agents/icd-converter/
+COPY packages/agents/customer-verification/package.json ./packages/agents/customer-verification/
+COPY packages/agents/fraud-detection/package.json ./packages/agents/fraud-detection/
+COPY packages/agents/payment-generator/package.json ./packages/agents/payment-generator/
+
+# Install all dependencies
+RUN pnpm install --frozen-lockfile
+
+# Copy source
+COPY . .
+
+# Generate Prisma client
+RUN cd packages/shared && npx prisma generate
+
+EXPOSE 4001 4002 4003 4004 4005 4006

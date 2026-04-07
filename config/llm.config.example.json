@@ -1,0 +1,26 @@
+{
+  "default": {
+    "provider": "anthropic",
+    "model": "claude-haiku-4-5",
+    "timeoutMs": 30000,
+    "maxTokens": 1000,
+    "temperature": 0.2
+  },
+  "agents": {
+    "CLAIMS_RECEIVER": {
+      "provider": "openai",
+      "model": "gpt-4o-mini"
+    },
+    "OCR_PROCESSOR": {
+      "provider": "azure-openai",
+      "model": "gpt-4o",
+      "endpoint": "https://your-resource.openai.azure.com",
+      "apiVersion": "2024-10-21",
+      "deployment": "gpt-4o"
+    },
+    "ICD_CONVERTER": {
+      "provider": "gemini",
+      "model": "gemini-2.0-flash"
+    }
+  }
+}

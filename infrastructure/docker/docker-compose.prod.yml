@@ -1,0 +1,204 @@
+version: '3.9'
+
+# ─── PRODUCTION COMPOSE — PostgreSQL, built images, nginx reverse proxy ───────
+# Usage: docker-compose -f infrastructure/docker/docker-compose.prod.yml up -d
+
+name: insurance-mas-prod
+
+x-agent-base: &agent-base
+  restart: always
+  env_file: ../../.env.prod
+  environment:
+    - NODE_ENV=production
+    - DATABASE_PROVIDER=postgresql
+    - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+  depends_on:
+    postgres:
+      condition: service_healthy
+    db-migrate:
+      condition: service_completed_successfully
+  networks:
+    - mas-net
+  logging:
+    driver: "json-file"
+    options:
+      max-size: "50m"
+      max-file: "5"
+
+services:
+  # ── POSTGRES ────────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: mas-postgres
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-masuser}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      POSTGRES_DB: ${POSTGRES_DB:-insurance_mas}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres-init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-masuser}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - mas-net
+
+  # ── DB MIGRATE ──────────────────────────────────────────────────────────────
+  db-migrate:
+    <<: *agent-base
+    build:
+      context: ../../
+      dockerfile: infrastructure/docker/Dockerfile.agent.prod
+      target: shared
+    container_name: mas-db-migrate
+    command: sh -c "cp /app/packages/shared/prisma/schema.prod.prisma /app/packages/shared/prisma/schema.prisma && cd /app/packages/shared && npx prisma generate && npx prisma migrate deploy && npx ts-node prisma/seed.ts"
+    restart: no
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ── CLAIMS RECEIVER ─────────────────────────────────────────────────────────
+  claims-receiver:
+    <<: *agent-base
+    build:
+      context: ../../
+      dockerfile: infrastructure/docker/Dockerfile.agent.prod
+      args:
+        AGENT: claims-receiver
+    container_name: mas-claims-receiver
+    environment:
+      - PORT=4001
+    volumes:
+      - agent_uploads:/tmp/uploads
+
+  # ── OCR PROCESSOR ───────────────────────────────────────────────────────────
+  ocr-processor:
+    <<: *agent-base
+    build:
+      context: ../../
+      dockerfile: infrastructure/docker/Dockerfile.agent.prod
+      args:
+        AGENT: ocr-processor
+    container_name: mas-ocr-processor
+    environment:
+      - PORT=4002
+    volumes:
+      - agent_uploads:/tmp/uploads
+
+  # ── ICD CONVERTER ───────────────────────────────────────────────────────────
+  icd-converter:
+    <<: *agent-base
+    build:
+      context: ../../
+      dockerfile: infrastructure/docker/Dockerfile.agent.prod
+      args:
+        AGENT: icd-converter
+    container_name: mas-icd-converter
+    environment:
+      - PORT=4003
+
+  # ── CUSTOMER VERIFICATION ───────────────────────────────────────────────────
+  customer-verification:
+    <<: *agent-base
+    build:
+      context: ../../
+      dockerfile: infrastructure/docker/Dockerfile.agent.prod
+      args:
+        AGENT: customer-verification
+    container_name: mas-customer-verification
+    environment:
+      - PORT=4004
+
+  # ── FRAUD DETECTION ─────────────────────────────────────────────────────────
+  fraud-detection:
+    <<: *agent-base
+    build:
+      context: ../../
+      dockerfile: infrastructure/docker/Dockerfile.agent.prod
+      args:
+        AGENT: fraud-detection
+    container_name: mas-fraud-detection
+    environment:
+      - PORT=4005
+
+  # ── PAYMENT GENERATOR ───────────────────────────────────────────────────────
+  payment-generator:
+    <<: *agent-base
+    build:
+      context: ../../
+      dockerfile: infrastructure/docker/Dockerfile.agent.prod
+      args:
+        AGENT: payment-generator
+    container_name: mas-payment-generator
+    environment:
+      - PORT=4006
+    depends_on:
+      - claims-receiver
+      - ocr-processor
+      - icd-converter
+      - customer-verification
+      - fraud-detection
+
+  # ── API GATEWAY ─────────────────────────────────────────────────────────────
+  gateway:
+    <<: *agent-base
+    build:
+      context: ../../
+      dockerfile: infrastructure/docker/Dockerfile.gateway.prod
+    container_name: mas-gateway
+    environment:
+      - GATEWAY_PORT=4000
+      - CLAIMS_RECEIVER_HOST=claims-receiver
+      - OCR_PROCESSOR_HOST=ocr-processor
+      - ICD_CONVERTER_HOST=icd-converter
+      - CUSTOMER_VERIFICATION_HOST=customer-verification
+      - FRAUD_DETECTION_HOST=fraud-detection
+      - PAYMENT_GENERATOR_HOST=payment-generator
+    depends_on:
+      - claims-receiver
+      - payment-generator
+
+  # ── UI (nginx static) ───────────────────────────────────────────────────────
+  ui:
+    build:
+      context: ../../
+      dockerfile: infrastructure/docker/Dockerfile.ui.prod
+    container_name: mas-ui
+    restart: always
+    networks:
+      - mas-net
+
+  # ── NGINX REVERSE PROXY ─────────────────────────────────────────────────────
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: mas-nginx
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ../nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ../nginx/ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - gateway
+      - ui
+    networks:
+      - mas-net
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+networks:
+  mas-net:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  agent_uploads:

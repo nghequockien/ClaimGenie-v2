@@ -1,0 +1,201 @@
+// Prisma Schema — PRODUCTION (PostgreSQL)
+// Active schema: prisma/schema.prisma (symlinked or copied by db:use-prod)
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─── ENUMS ────────────────────────────────────────────────────────────────────
+
+enum ClaimStatus {
+  RECEIVED
+  OCR_PROCESSING
+  OCR_COMPLETED
+  OCR_FAILED
+  ICD_CONVERTING
+  ICD_COMPLETED
+  ICD_FAILED
+  VERIFYING_CUSTOMER
+  CUSTOMER_VERIFIED
+  CUSTOMER_FAILED
+  FRAUD_CHECKING
+  FRAUD_CLEARED
+  FRAUD_FLAGGED
+  PAYMENT_GENERATING
+  PAYMENT_GENERATED
+  PAYMENT_FAILED
+  COMPLETED
+  FAILED
+}
+
+enum AgentName {
+  CLAIMS_RECEIVER
+  OCR_PROCESSOR
+  ICD_CONVERTER
+  CUSTOMER_VERIFICATION
+  FRAUD_DETECTION
+  PAYMENT_GENERATOR
+}
+
+enum LogLevel {
+  DEBUG
+  INFO
+  WARN
+  ERROR
+}
+
+enum TaskStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+  RETRYING
+}
+
+// ─── MODELS ───────────────────────────────────────────────────────────────────
+
+model Claim {
+  id                String      @id @default(uuid())
+  claimNumber       String      @unique
+  patientName       String
+  patientDob        String
+  patientId         String
+  insuranceId       String
+  providerId        String
+  providerName      String
+  dateOfService     String
+  diagnosis         String?
+  treatmentDetails  String?
+  totalAmount       Float
+  currency          String      @default("USD")
+  documentPath      String?
+  rawOcrText        String?
+  icdCodes          Json?
+  fraudScore        Float?
+  fraudFlags        Json?
+  paymentData       Json?
+  verificationData  Json?
+  submittedByUserId String?
+  submittedByEmail  String?
+  submittedByName   String?
+  submittedByRole   String?
+  submittedByProvider String?
+  status            ClaimStatus @default(RECEIVED)
+  priority          String      @default("NORMAL")
+  metadata          Json?
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+
+  tasks             AgentTask[]
+  logs              ClaimLog[]
+  events            ClaimEvent[]
+
+  @@index([status])
+  @@index([claimNumber])
+  @@index([submittedByEmail])
+  @@index([submittedByUserId])
+  @@index([createdAt])
+}
+
+model AgentTask {
+  id          String     @id @default(uuid())
+  claimId     String
+  agentName   AgentName
+  status      TaskStatus @default(PENDING)
+  input       Json?
+  output      Json?
+  errorMsg    String?
+  retryCount  Int        @default(0)
+  maxRetries  Int        @default(3)
+  startedAt   DateTime?
+  completedAt DateTime?
+  duration    Int?
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  claim       Claim      @relation(fields: [claimId], references: [id], onDelete: Cascade)
+  logs        ClaimLog[]
+
+  @@index([claimId])
+  @@index([agentName, status])
+}
+
+model ClaimLog {
+  id        String     @id @default(uuid())
+  claimId   String
+  taskId    String?
+  agentName AgentName?
+  level     LogLevel   @default(INFO)
+  message   String
+  details   Json?
+  timestamp DateTime   @default(now())
+
+  claim     Claim      @relation(fields: [claimId], references: [id], onDelete: Cascade)
+  task      AgentTask? @relation(fields: [taskId], references: [id], onDelete: SetNull)
+
+  @@index([claimId])
+  @@index([timestamp])
+  @@index([level])
+}
+
+model ClaimEvent {
+  id        String     @id @default(uuid())
+  claimId   String
+  eventType String
+  fromAgent AgentName?
+  toAgent   AgentName?
+  payload   Json?
+  timestamp DateTime   @default(now())
+
+  claim     Claim      @relation(fields: [claimId], references: [id], onDelete: Cascade)
+
+  @@index([claimId])
+  @@index([eventType])
+}
+
+model SystemMetrics {
+  id             String    @id @default(uuid())
+  agentName      AgentName @unique
+  totalProcessed Int       @default(0)
+  totalFailed    Int       @default(0)
+  avgDuration    Float?
+  lastActiveAt   DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+}
+
+model AgentConfig {
+  id           String   @id @default(uuid())
+  agentName    AgentName @unique
+  provider     String   @default("anthropic")
+  model        String   @default("claude-haiku-4-5")
+  systemPrompt String
+  temperature  Float    @default(0.7)
+  maxTokens    Int      @default(4096)
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([agentName])
+}
+
+model AppUser {
+  id             String    @id @default(uuid())
+  email          String    @unique
+  fullName       String?   @map("full_name")
+  provider       String
+  providerUserId String    @map("provider_user_id")
+  passwordHash   String?   @map("password_hash")
+  role           String    @default("USER")
+  isActive       Boolean   @default(true) @map("is_active")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+  lastLoginAt    DateTime? @map("last_login_at")
+
+  @@index([role])
+  @@map("app_users")
+}

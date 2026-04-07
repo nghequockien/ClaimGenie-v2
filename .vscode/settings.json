@@ -1,0 +1,13 @@
+{
+  "typescript.tsserver.experimental.enableProjectDiagnostics": false,
+  "typescript.tsserver.watchOptions": {
+    "excludeDirectories": ["**/.pnpm", "**/dist"]
+  },
+  "files.exclude": {
+    "**/.pnpm": true
+  },
+  "search.exclude": {
+    "**/node_modules": true,
+    "**/.pnpm": true
+  }
+}
