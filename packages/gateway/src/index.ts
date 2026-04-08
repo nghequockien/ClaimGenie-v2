@@ -8,7 +8,9 @@ import { createAuthModule } from "@claimgenie/auth";
 import {
   createLogger,
   AGENT_PORTS,
+  AgentCard,
   AgentName,
+  validateAgentCard,
   prismaClient,
   prismaReady,
 } from "@claimgenie/shared";
@@ -327,6 +329,98 @@ app.get("/api/health/agents", async (_, res) => {
 function agentHost(name: AgentName) {
   return process.env[`${name}_HOST`] || "localhost";
 }
+
+async function fetchAgentCardFromAgent(name: AgentName): Promise<AgentCard> {
+  const host = agentHost(name);
+  const port = AGENT_PORTS[name];
+  const fallbackBaseUrl = `http://${host}:${port}`;
+
+  const fallbackCard: AgentCard = {
+    name,
+    description: `${name} fallback card`,
+    url: fallbackBaseUrl,
+    version: "fallback",
+    capabilities: {
+      streaming: false,
+      pushNotifications: false,
+      stateTransitionHistory: false,
+    },
+    authentication: { schemes: [] },
+    defaultInputModes: ["application/json"],
+    defaultOutputModes: ["application/json"],
+    skills: [
+      {
+        id: `${name.toLowerCase()}.a2a`,
+        name: `${name} A2A Processing`,
+        description: `Handle A2A tasks for ${name}`,
+        tags: ["insurance", "claims", "a2a"],
+      },
+    ],
+  };
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 3000);
+
+  try {
+    const response = await fetch(`http://${host}:${port}/agent-card`, {
+      method: "GET",
+      headers: { Accept: "application/json" },
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      return fallbackCard;
+    }
+
+    const rawCard = (await response.json()) as unknown;
+    const validation = validateAgentCard(rawCard);
+    if (!validation.success) {
+      logger.warn("Invalid Agent Card received from agent. Using fallback.", {
+        agent: name,
+        errors: validation.errors,
+      });
+      return fallbackCard;
+    }
+
+    return validation.data;
+  } catch {
+    return fallbackCard;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+app.get("/api/registry/agents", async (_req, res) => {
+  const results = await Promise.allSettled(
+    (Object.keys(AGENT_PORTS) as AgentName[]).map(async (name) =>
+      fetchAgentCardFromAgent(name),
+    ),
+  );
+
+  const agents = results
+    .filter(
+      (result): result is PromiseFulfilledResult<AgentCard> =>
+        result.status === "fulfilled",
+    )
+    .map((result) => result.value);
+
+  res.json({ agents, timestamp: new Date().toISOString() });
+});
+
+app.get("/api/registry/agents/:agentName", async (req, res) => {
+  const normalized = req.params.agentName
+    .trim()
+    .toUpperCase()
+    .replace(/-/g, "_") as AgentName;
+
+  if (!(normalized in AGENT_PORTS)) {
+    res.status(404).json({ error: `Unknown agent: ${req.params.agentName}` });
+    return;
+  }
+
+  const agent = await fetchAgentCardFromAgent(normalized);
+  res.json({ agent, timestamp: new Date().toISOString() });
+});
 
 // Claims Receiver - main claims API
 app.use(

@@ -5,11 +5,15 @@ import {
   AgentName,
   AgentConfig,
   A2AMessage,
+  A2A_MESSAGE_TYPES,
+  AgentCard,
   TaskStatus,
   LogLevel,
 } from "./types";
 import { createLogger, Logger } from "./logger";
 import { A2AClient } from "./a2a";
+import { createA2AJwtValidationMiddleware } from "./a2a-auth";
+import { validateAgentCard } from "./agent-card-schema";
 
 export abstract class BaseAgent {
   protected name: AgentName;
@@ -44,31 +48,78 @@ export abstract class BaseAgent {
       });
     });
 
-    // A2A receive endpoint
-    this.app.post("/a2a/receive", async (req: Request, res: Response) => {
-      const message: A2AMessage = req.body;
-      this.logger.info(`Received A2A message`, {
-        type: message.messageType,
-        from: message.fromAgent,
-      });
+    // Agent card (A2A discovery metadata)
+    this.app.get("/agent-card", (_req: Request, res: Response) => {
+      const card = this.createAgentCard();
+      const validation = validateAgentCard(card);
 
-      try {
-        const reply = await this.handleA2AMessage(message);
-        res.json(reply);
-      } catch (err: any) {
-        this.logger.error("A2A handler error", { error: err.message });
+      if (!validation.success) {
+        this.logger.error("Generated Agent Card failed schema validation", {
+          errors: validation.errors,
+        });
         res.status(500).json({
-          id: uuidv4(),
-          protocol: "A2A/1.0",
-          timestamp: new Date().toISOString(),
-          correlationId: message.correlationId,
-          fromAgent: this.name,
-          toAgent: message.fromAgent,
-          messageType: "TASK_ERROR",
-          payload: { error: err.message },
-        } as A2AMessage);
+          error: "Invalid Agent Card generated",
+          details: validation.errors,
+        });
+        return;
       }
+
+      res.json(validation.data);
     });
+
+    this.app.get(
+      "/.well-known/agent-card.json",
+      (_req: Request, res: Response) => {
+        const card = this.createAgentCard();
+        const validation = validateAgentCard(card);
+
+        if (!validation.success) {
+          this.logger.error("Generated Agent Card failed schema validation", {
+            errors: validation.errors,
+          });
+          res.status(500).json({
+            error: "Invalid Agent Card generated",
+            details: validation.errors,
+          });
+          return;
+        }
+
+        res.json(validation.data);
+      },
+    );
+
+    // A2A receive endpoint
+    this.app.post(
+      "/a2a/receive",
+      createA2AJwtValidationMiddleware(this.name, this.logger),
+      async (req: Request, res: Response) => {
+        const message: A2AMessage = req.body;
+        this.logger.info(`Received A2A message`, {
+          type: message.messageType,
+          from: message.fromAgent,
+          authSub: req.headers["x-a2a-auth-sub"],
+          authClient: req.headers["x-a2a-auth-client"],
+          authMappedAgent: req.headers["x-a2a-auth-mapped-agent"],
+        });
+
+        try {
+          const reply = await this.handleA2AMessage(message);
+          res.json(reply);
+        } catch (err: any) {
+          this.logger.error("A2A handler error", { error: err.message });
+          res.status(500).json({
+            id: uuidv4(),
+            protocol: "A2A/1.0",
+            timestamp: new Date().toISOString(),
+            correlationId: message.correlationId,
+            fromAgent: this.name,
+            toAgent: message.fromAgent,
+            messageType: "TASK_ERROR",
+            payload: { error: err.message },
+          } as A2AMessage);
+        }
+      },
+    );
 
     // Manual retry endpoint
     this.app.post("/retry/:taskId", async (req: Request, res: Response) => {
@@ -92,6 +143,47 @@ export abstract class BaseAgent {
     data: unknown,
   ): Promise<unknown>;
   protected registerRoutes(_app: express.Application): void {}
+
+  protected createAgentCard(): AgentCard {
+    const publicUrl =
+      process.env[`${this.name}_PUBLIC_URL`] || `http://localhost:${this.port}`;
+    const documentationUrl = process.env[`${this.name}_DOCS_URL`];
+    const providerOrg = process.env.A2A_PROVIDER_ORG;
+    const providerUrl = process.env.A2A_PROVIDER_URL;
+    const authMode = process.env.A2A_AUTH_MODE || "none";
+
+    return {
+      name: this.name,
+      description: `${this.name} agent for insurance claims workflow`,
+      url: publicUrl,
+      provider:
+        providerOrg && providerUrl
+          ? { organization: providerOrg, url: providerUrl }
+          : undefined,
+      version: process.env.AGENT_CARD_VERSION || "1.0.0",
+      documentationUrl,
+      capabilities: {
+        streaming: false,
+        pushNotifications: false,
+        stateTransitionHistory: false,
+      },
+      authentication: {
+        schemes: authMode === "oauth2_client_credentials" ? ["Bearer"] : [],
+        credentials: process.env.A2A_CARD_CREDENTIALS,
+      },
+      defaultInputModes: ["application/json"],
+      defaultOutputModes: ["application/json"],
+      skills: [
+        {
+          id: `${this.name.toLowerCase()}.a2a`,
+          name: `${this.name} A2A Processing`,
+          description: `Handle A2A tasks for ${this.name}`,
+          tags: ["insurance", "claims", "a2a"],
+          examples: A2A_MESSAGE_TYPES.map((type) => `${type} message`),
+        },
+      ],
+    };
+  }
 
   private toJsonString(value: unknown): string | null {
     if (value === undefined || value === null) return null;

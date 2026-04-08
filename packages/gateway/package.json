@@ -5,7 +5,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "predev": "pnpm --filter @claimgenie/shared build && pnpm --filter @claimgenie/auth build",
-    "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
+    "dev": "ts-node-dev --no-deprecation --respawn --transpile-only src/index.ts",
     "start": "node dist/index.js"
   },
   "dependencies": {

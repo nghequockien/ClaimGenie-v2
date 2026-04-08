@@ -23,6 +23,57 @@ export type A2AMessageType =
   | "PING"
   | "PONG";
 
+export const A2A_MESSAGE_TYPES: A2AMessageType[] = [
+  "TASK_REQUEST",
+  "TASK_RESPONSE",
+  "TASK_ERROR",
+  "TASK_RETRY",
+  "HANDOFF",
+  "STATUS_UPDATE",
+  "PING",
+  "PONG",
+];
+
+export interface AgentCardProvider {
+  organization: string;
+  url: string;
+}
+
+export interface AgentCardCapabilities {
+  streaming?: boolean;
+  pushNotifications?: boolean;
+  stateTransitionHistory?: boolean;
+}
+
+export interface AgentCardAuthentication {
+  schemes: string[];
+  credentials?: string;
+}
+
+export interface AgentCardSkill {
+  id: string;
+  name: string;
+  description: string;
+  tags: string[];
+  examples?: string[];
+  inputModes?: string[];
+  outputModes?: string[];
+}
+
+export interface AgentCard {
+  name: string;
+  description: string;
+  url: string;
+  provider?: AgentCardProvider;
+  version: string;
+  documentationUrl?: string;
+  capabilities: AgentCardCapabilities;
+  authentication: AgentCardAuthentication;
+  defaultInputModes: string[];
+  defaultOutputModes: string[];
+  skills: AgentCardSkill[];
+}
+
 export interface A2ATaskRequest {
   taskId: string;
   claimId: string;
