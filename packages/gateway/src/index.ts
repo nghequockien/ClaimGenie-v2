@@ -579,6 +579,7 @@ type AgentConfigRow = {
   systemPrompt: string;
   temperature: number;
   maxTokens: number;
+  agentCard: string | null;
   updatedAt: Date;
 };
 
@@ -598,6 +599,7 @@ type AgentConfigDelegate = {
       systemPrompt?: string;
       temperature?: number;
       maxTokens?: number;
+      agentCard?: string | null;
     };
   }) => Promise<AgentConfigRow>;
 };
@@ -621,6 +623,16 @@ app.get("/api/agents/config", requireAdmin, async (_req, res) => {
 
     const configMap: Record<string, any> = {};
     configs.forEach((config) => {
+      const parsedCard = config.agentCard
+        ? (() => {
+            try {
+              return JSON.parse(config.agentCard);
+            } catch {
+              return null;
+            }
+          })()
+        : null;
+
       configMap[config.agentName] = {
         agentName: config.agentName,
         provider: config.provider,
@@ -628,6 +640,7 @@ app.get("/api/agents/config", requireAdmin, async (_req, res) => {
         systemPrompt: config.systemPrompt,
         temperature: config.temperature,
         maxTokens: config.maxTokens,
+        agentCard: parsedCard,
         configurable: true,
         updatedAt: config.updatedAt.toISOString(),
       };
@@ -652,6 +665,16 @@ app.get("/api/agents/config/:agentName", requireAdmin, async (req, res) => {
       return res.status(404).json({ error: `Agent ${agentName} not found` });
     }
 
+    const parsedCard = config.agentCard
+      ? (() => {
+          try {
+            return JSON.parse(config.agentCard);
+          } catch {
+            return null;
+          }
+        })()
+      : null;
+
     res.json({
       agentName: config.agentName,
       provider: config.provider,
@@ -659,6 +682,7 @@ app.get("/api/agents/config/:agentName", requireAdmin, async (req, res) => {
       systemPrompt: config.systemPrompt,
       temperature: config.temperature,
       maxTokens: config.maxTokens,
+      agentCard: parsedCard,
       configurable: true,
       updatedAt: config.updatedAt.toISOString(),
     });
@@ -676,8 +700,45 @@ app.put(
   async (req, res) => {
     try {
       const { agentName } = req.params;
-      const { provider, model, systemPrompt, temperature, maxTokens } =
-        req.body;
+      const {
+        provider,
+        model,
+        systemPrompt,
+        temperature,
+        maxTokens,
+        agentCard,
+      } = req.body;
+
+      // Validate agentCard if provided — may arrive as object (axios) or string (curl)
+      let agentCardObj: Record<string, any> | null | undefined;
+      if (agentCard === undefined) {
+        agentCardObj = undefined;
+      } else if (agentCard === null || agentCard === "") {
+        agentCardObj = null;
+      } else {
+        try {
+          agentCardObj =
+            typeof agentCard === "object"
+              ? agentCard
+              : JSON.parse(String(agentCard));
+          // Basic validation: must be an object with required fields
+          if (
+            typeof agentCardObj !== "object" ||
+            !agentCardObj?.schemaVersion ||
+            !agentCardObj?.humanReadableId ||
+            !agentCardObj?.name ||
+            !agentCardObj?.description ||
+            !agentCardObj?.authSchemes
+          ) {
+            return res.status(400).json({
+              error:
+                "agentCard must be a valid Agent Card JSON with schemaVersion, humanReadableId, name, description, and authSchemes",
+            });
+          }
+        } catch {
+          return res.status(400).json({ error: "agentCard is not valid JSON" });
+        }
+      }
 
       const normalizedTemperature =
         temperature === undefined || temperature === null
@@ -702,6 +763,12 @@ app.put(
             Number.isFinite(normalizedMaxTokens)
               ? Math.trunc(normalizedMaxTokens)
               : undefined,
+          agentCard:
+            agentCardObj === undefined
+              ? undefined
+              : agentCardObj === null
+                ? null
+                : JSON.stringify(agentCardObj),
         },
       });
 
@@ -709,6 +776,16 @@ app.put(
         provider: updated.provider,
         model: updated.model,
       });
+
+      const parsedCard = updated.agentCard
+        ? (() => {
+            try {
+              return JSON.parse(updated.agentCard);
+            } catch {
+              return null;
+            }
+          })()
+        : null;
 
       // Broadcast config change via SSE
       broadcast("agent-config-updated", {
@@ -718,6 +795,7 @@ app.put(
         systemPrompt: updated.systemPrompt,
         temperature: updated.temperature,
         maxTokens: updated.maxTokens,
+        agentCard: parsedCard,
         updatedAt: updated.updatedAt.toISOString(),
       });
 
@@ -728,6 +806,7 @@ app.put(
         systemPrompt: updated.systemPrompt,
         temperature: updated.temperature,
         maxTokens: updated.maxTokens,
+        agentCard: parsedCard,
         configurable: true,
         updatedAt: updated.updatedAt.toISOString(),
       });

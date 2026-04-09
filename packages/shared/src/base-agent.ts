@@ -49,27 +49,33 @@ export abstract class BaseAgent {
     });
 
     // Agent card (A2A discovery metadata)
-    this.app.get("/agent-card", (_req: Request, res: Response) => {
-      const card = this.createAgentCard();
-      const validation = validateAgentCard(card);
+    const serveAgentCard = async (_req: Request, res: Response) => {
+      try {
+        const dbConfig = (await (this.prisma as any).agentConfig
+          .findUnique({
+            where: { agentName: this.name },
+            select: { agentCard: true },
+          })
+          .catch(() => null)) as {
+          agentCard: string | null;
+        } | null;
 
-      if (!validation.success) {
-        this.logger.error("Generated Agent Card failed schema validation", {
-          errors: validation.errors,
-        });
-        res.status(500).json({
-          error: "Invalid Agent Card generated",
-          details: validation.errors,
-        });
-        return;
-      }
+        // Use database-stored card if available
+        if (dbConfig?.agentCard) {
+          try {
+            const card = JSON.parse(dbConfig.agentCard);
+            const validation = validateAgentCard(card);
 
-      res.json(validation.data);
-    });
+            if (validation.success) {
+              res.json(validation.data);
+              return;
+            }
+          } catch {
+            // Fall through to generated card
+          }
+        }
 
-    this.app.get(
-      "/.well-known/agent-card.json",
-      (_req: Request, res: Response) => {
+        // Fall back to generated card
         const card = this.createAgentCard();
         const validation = validateAgentCard(card);
 
@@ -85,8 +91,15 @@ export abstract class BaseAgent {
         }
 
         res.json(validation.data);
-      },
-    );
+      } catch (err: any) {
+        this.logger.error("Failed to build Agent Card", { error: err.message });
+        res.status(500).json({ error: "Failed to build Agent Card" });
+      }
+    };
+
+    this.app.get("/agent-card", serveAgentCard);
+    this.app.get("/.well-known/agent-card.json", serveAgentCard);
+    this.app.get("/.well-known/agents.json", serveAgentCard);
 
     // A2A receive endpoint
     this.app.post(
@@ -151,6 +164,38 @@ export abstract class BaseAgent {
     const providerOrg = process.env.A2A_PROVIDER_ORG;
     const providerUrl = process.env.A2A_PROVIDER_URL;
     const authMode = process.env.A2A_AUTH_MODE || "none";
+    const computedAudience =
+      process.env[`A2A_AUDIENCE_${this.name}`] ||
+      process.env.A2A_AUDIENCE ||
+      this.name;
+    const computedScope =
+      process.env[`A2A_REQUIRED_SCOPE_${this.name}`] ||
+      process.env.A2A_REQUIRED_SCOPE ||
+      `a2a.invoke.${this.name.toLowerCase()}`;
+    const computedTokenEndpoint =
+      process.env[`A2A_TOKEN_ENDPOINT_${this.name}`] ||
+      process.env.A2A_TOKEN_ENDPOINT ||
+      "";
+
+    const credentialsHintPayload =
+      process.env.A2A_CARD_CREDENTIALS ||
+      (authMode === "oauth2_client_credentials" && computedTokenEndpoint
+        ? JSON.stringify({
+            tokenEndpoint: computedTokenEndpoint,
+            audience: computedAudience,
+            scope: computedScope,
+          })
+        : undefined);
+
+    const skills: AgentCard["skills"] = [
+      {
+        id: `${this.name.toLowerCase()}.a2a`,
+        name: `${this.name} A2A Processing`,
+        description: `Handle A2A tasks for ${this.name}`,
+        tags: ["insurance", "claims", "a2a"],
+        examples: A2A_MESSAGE_TYPES.map((type) => `${type} message`),
+      },
+    ];
 
     return {
       name: this.name,
@@ -169,19 +214,11 @@ export abstract class BaseAgent {
       },
       authentication: {
         schemes: authMode === "oauth2_client_credentials" ? ["Bearer"] : [],
-        credentials: process.env.A2A_CARD_CREDENTIALS,
+        credentials: credentialsHintPayload,
       },
       defaultInputModes: ["application/json"],
       defaultOutputModes: ["application/json"],
-      skills: [
-        {
-          id: `${this.name.toLowerCase()}.a2a`,
-          name: `${this.name} A2A Processing`,
-          description: `Handle A2A tasks for ${this.name}`,
-          tags: ["insurance", "claims", "a2a"],
-          examples: A2A_MESSAGE_TYPES.map((type) => `${type} message`),
-        },
-      ],
+      skills,
     };
   }
 
@@ -219,10 +256,23 @@ export abstract class BaseAgent {
 
     for (let attempt = 0; attempt <= retries; attempt += 1) {
       try {
+        if (attempt > 0) {
+          this.logger.debug(`${operationName} retry attempt`, {
+            attempt,
+            retries,
+          });
+        }
         return await action();
       } catch (error) {
         const isRetryable = this.isTransientDbError(error);
         const isLastAttempt = attempt === retries;
+
+        this.logger.debug(`${operationName} write failed`, {
+          attempt,
+          retries,
+          retryable: isRetryable,
+          error: error instanceof Error ? error.message : String(error),
+        });
 
         if (!isRetryable || isLastAttempt) {
           if (options.swallowFinalError) {
@@ -274,6 +324,11 @@ export abstract class BaseAgent {
     if (!task) {
       throw new Error("Failed to create task");
     }
+    this.logger.debug("Task created", {
+      taskId: task.id,
+      claimId,
+      targetAgent: agentName ?? this.name,
+    });
     return task.id;
   }
 
@@ -301,6 +356,13 @@ export abstract class BaseAgent {
     }
     if (output !== undefined) data.output = this.toJsonString(output);
     if (errorMsg !== undefined) data.errorMsg = errorMsg;
+
+    this.logger.debug("Updating task status", {
+      taskId,
+      status,
+      hasOutput: output !== undefined,
+      hasError: errorMsg !== undefined,
+    });
 
     await this.withDbWriteRetry("updateTaskStatus", () =>
       this.prisma.agentTask.update({ where: { id: taskId }, data }),
@@ -337,6 +399,12 @@ export abstract class BaseAgent {
     payload?: unknown,
     toAgent?: AgentName,
   ) {
+    this.logger.debug("Recording claim event", {
+      claimId,
+      eventType,
+      toAgent,
+      hasPayload: payload !== undefined,
+    });
     await this.withDbWriteRetry("recordEvent", () =>
       this.prisma.claimEvent.create({
         data: {

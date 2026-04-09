@@ -169,16 +169,17 @@ model SystemMetrics {
 }
 
 model AgentConfig {
-  id           String   @id @default(uuid())
-  agentName    AgentName @unique
-  provider     String   @default("anthropic")
-  model        String   @default("claude-haiku-4-5")
+  id        String    @id @default(uuid())
+  agentName AgentName @unique
+  provider  String    @default("anthropic")
+  model     String    @default("claude-haiku-4-5")
   systemPrompt String
-  temperature  Float    @default(0.7)
-  maxTokens    Int      @default(4096)
-  active       Boolean  @default(true)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  temperature Float   @default(0.7)
+  maxTokens Int      @default(4096)
+  active    Boolean  @default(true)
+  agentCard String?  // JSON: complete Agent Card metadata — if set, overrides generated card
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([agentName])
 }

@@ -114,6 +114,44 @@ http://localhost:3000
 
 Submit a sample claim via **New Claim → Load sample claim data** and watch it process in real-time on the Monitoring page.
 
+## A2A OAuth 2.0 (Agent-to-Agent)
+
+The gateway now exposes a built-in OAuth 2.0 client credentials issuer for secure agent-to-agent calls:
+
+- Token endpoint: `/oauth2/token`
+- JWKS: `/.well-known/jwks.json`
+- Authorization server metadata: `/.well-known/oauth-authorization-server`
+
+### Minimal configuration
+
+```bash
+# Enable OAuth metadata in Agent Cards
+A2A_AUTH_MODE=oauth2_client_credentials
+
+# Point agents to issuer endpoints
+A2A_TOKEN_ENDPOINT=http://localhost:4000/oauth2/token
+A2A_TOKEN_ISSUER=http://localhost:4000
+A2A_JWKS_URI=http://localhost:4000/.well-known/jwks.json
+
+# Enable JWT validation on receiver agents
+A2A_VALIDATE_JWT=true
+
+# Register one client identity per agent
+A2A_CLIENT_ID_CLAIMS_RECEIVER=claims-receiver-client
+A2A_CLIENT_SECRET_CLAIMS_RECEIVER=change-me
+A2A_CLIENT_ID_OCR_PROCESSOR=ocr-processor-client
+A2A_CLIENT_SECRET_OCR_PROCESSOR=change-me
+# ...repeat for all agents
+
+# Sender credentials (per caller agent process)
+A2A_OAUTH_CLIENT_ID=claims-receiver-client
+A2A_OAUTH_CLIENT_SECRET=change-me
+```
+
+### Production note
+
+Set `A2A_JWT_PRIVATE_KEY` and `A2A_JWT_PUBLIC_KEY` (PEM format) so token signing keys are stable across restarts.
+
 ---
 
 ## LLM Configuration

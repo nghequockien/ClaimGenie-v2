@@ -206,6 +206,9 @@ importers:
       express-session:
         specifier: ^1.18.1
         version: 1.19.0
+      jose:
+        specifier: ^6.2.2
+        version: 6.2.2
     devDependencies:
       '@types/express':
         specifier: ^4.17.0

@@ -2,7 +2,17 @@ import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { agentConfigApi } from "../api";
 import { AgentConfig, LlmProviderInfo, AGENT_META, AgentName } from "../types";
-import { Settings, Save, CheckCircle2, Loader2, Zap } from "lucide-react";
+import {
+  Settings,
+  Save,
+  CheckCircle2,
+  Loader2,
+  Zap,
+  FileText,
+  ShieldCheck,
+  AlertTriangle,
+  Wrench,
+} from "lucide-react";
 import clsx from "clsx";
 import { useTranslation } from "react-i18next";
 
@@ -12,6 +22,63 @@ export default function AgentConfigPage() {
   const [selectedAgent, setSelectedAgent] = useState<AgentName | null>(null);
   const [formData, setFormData] = useState<Partial<AgentConfig>>({});
   const [saved, setSaved] = useState(false);
+  // Raw text state for the agentCard textarea (tracks in-progress edits)
+  const [agentCardRaw, setAgentCardRaw] = useState("");
+  const [cardValidation, setCardValidation] = useState<{
+    status: "idle" | "valid" | "error";
+    message: string;
+  }>({ status: "idle", message: "" });
+
+  const REQUIRED_CARD_FIELDS = [
+    "schemaVersion",
+    "humanReadableId",
+    "name",
+    "description",
+    "authSchemes",
+  ] as const;
+
+  function validateCardJson(raw: string): {
+    status: "valid" | "error";
+    message: string;
+    parsed?: Record<string, any>;
+  } {
+    if (raw.trim() === "") {
+      return {
+        status: "valid",
+        message: "Empty — generated defaults will be used.",
+      };
+    }
+    let parsed: any;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (e: any) {
+      return { status: "error", message: `Invalid JSON: ${e.message}` };
+    }
+    if (
+      typeof parsed !== "object" ||
+      Array.isArray(parsed) ||
+      parsed === null
+    ) {
+      return {
+        status: "error",
+        message: "Agent Card must be a JSON object, not an array or primitive.",
+      };
+    }
+    const missing = REQUIRED_CARD_FIELDS.filter((f) => !parsed[f]);
+    if (missing.length > 0) {
+      return {
+        status: "error",
+        message: `Missing required fields: ${missing.join(", ")}`,
+      };
+    }
+    if (!Array.isArray(parsed.authSchemes) || parsed.authSchemes.length === 0) {
+      return {
+        status: "error",
+        message: "authSchemes must be a non-empty array.",
+      };
+    }
+    return { status: "valid", message: "Agent Card JSON is valid ✓", parsed };
+  }
 
   // Fetch providers and all configs
   const { data: providers, isLoading: providersLoading } = useQuery({
@@ -50,21 +117,32 @@ export default function AgentConfigPage() {
   // Update form when current config loads
   useEffect(() => {
     if (currentConfig) {
+      const cardStr = currentConfig.agentCard
+        ? JSON.stringify(currentConfig.agentCard, null, 2)
+        : "";
       setFormData({
         provider: currentConfig.provider,
         model: currentConfig.model,
         systemPrompt: currentConfig.systemPrompt,
         temperature: currentConfig.temperature,
         maxTokens: currentConfig.maxTokens,
+        agentCard: currentConfig.agentCard ?? null,
       });
+      setAgentCardRaw(cardStr);
+      setCardValidation({ status: "idle", message: "" });
     }
   }, [currentConfig]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (selectedAgent && formData) {
-      updateConfig(formData);
+    if (!selectedAgent) return;
+    // Block save if the raw textarea has invalid JSON
+    const validation = validateCardJson(agentCardRaw);
+    if (validation.status === "error") {
+      setCardValidation(validation);
+      return;
     }
+    updateConfig(formData);
   };
 
   const getAvailableModels = (): string[] => {
@@ -285,6 +363,79 @@ export default function AgentConfigPage() {
                     <div className="text-xs text-slate-500 mt-1">
                       This prompt guides the agent's behavior and
                       decision-making
+                    </div>
+                  </div>
+
+                  {/* Agent Card JSON */}
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <label className="block text-sm font-medium text-slate-300 flex items-center gap-1.5">
+                        <FileText size={13} />
+                        Agent Card (JSON)
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const result = validateCardJson(agentCardRaw);
+                          setCardValidation(result);
+                        }}
+                        className="flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-medium bg-slate-600 hover:bg-slate-500 text-slate-200 transition-colors"
+                      >
+                        <ShieldCheck size={12} />
+                        Validate
+                      </button>
+                    </div>
+                    <textarea
+                      value={agentCardRaw}
+                      onChange={(e) => {
+                        const raw = e.target.value;
+                        setAgentCardRaw(raw);
+                        setCardValidation({ status: "idle", message: "" });
+                        try {
+                          const parsed =
+                            raw.trim() === "" ? null : JSON.parse(raw);
+                          setFormData({ ...formData, agentCard: parsed });
+                        } catch {
+                          // Keep raw text so user can keep typing
+                          setFormData({ ...formData, agentCard: null });
+                        }
+                      }}
+                      rows={12}
+                      spellCheck={false}
+                      className={clsx(
+                        "w-full bg-slate-700 rounded-lg px-3 py-2 text-slate-100 text-xs focus:outline-none font-mono border",
+                        cardValidation.status === "error"
+                          ? "border-red-500 focus:border-red-400"
+                          : cardValidation.status === "valid"
+                            ? "border-green-500 focus:border-green-400"
+                            : "border-slate-600 focus:border-indigo-500",
+                      )}
+                      placeholder={`{\n  "schemaVersion": "1.0",\n  "humanReadableId": "...",\n  "name": "...",\n  "description": "...",\n  "authSchemes": [...]\n}`}
+                    />
+                    {cardValidation.status !== "idle" && (
+                      <div
+                        className={clsx(
+                          "flex items-start gap-1.5 mt-1.5 text-xs rounded-md px-2.5 py-1.5",
+                          cardValidation.status === "error"
+                            ? "bg-red-500/10 text-red-400"
+                            : "bg-green-500/10 text-green-400",
+                        )}
+                      >
+                        {cardValidation.status === "error" ? (
+                          <AlertTriangle
+                            size={12}
+                            className="mt-0.5 shrink-0"
+                          />
+                        ) : (
+                          <CheckCircle2 size={12} className="mt-0.5 shrink-0" />
+                        )}
+                        <span>{cardValidation.message}</span>
+                      </div>
+                    )}
+                    <div className="text-xs text-slate-500 mt-1">
+                      Required fields: schemaVersion, humanReadableId, name,
+                      description, authSchemes. Leave blank to use generated
+                      defaults.
                     </div>
                   </div>
 

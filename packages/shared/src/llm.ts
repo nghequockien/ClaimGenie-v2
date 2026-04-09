@@ -3,6 +3,9 @@ import path from "path";
 import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
 import { AgentName } from "./types";
+import { createLogger } from "./logger";
+
+const llmLogger = createLogger();
 
 export type LlmProvider = "anthropic" | "openai" | "azure-openai" | "gemini";
 
@@ -370,6 +373,37 @@ export class LlmClient {
     prompt: string,
     options: GenerateOptions = {},
   ): Promise<string> {
+    const _llmStartMs = Date.now();
+    llmLogger.debug("LLM generateText", {
+      provider: this.config.provider,
+      model: this.config.model,
+      promptLength: prompt.length,
+      hasSystemPrompt: !!options.system,
+    });
+    try {
+      const result = await this._doGenerateText(prompt, options);
+      llmLogger.debug("LLM generateText done", {
+        provider: this.config.provider,
+        model: this.config.model,
+        responseLength: result.length,
+        durationMs: Date.now() - _llmStartMs,
+      });
+      return result;
+    } catch (err) {
+      llmLogger.debug("LLM generateText error", {
+        provider: this.config.provider,
+        model: this.config.model,
+        durationMs: Date.now() - _llmStartMs,
+        error: (err as Error).message,
+      });
+      throw err;
+    }
+  }
+
+  private async _doGenerateText(
+    prompt: string,
+    options: GenerateOptions = {},
+  ): Promise<string> {
     const timeoutMs =
       options.timeoutMs || this.config.timeoutMs || DEFAULT_TIMEOUT_MS;
 
@@ -468,6 +502,39 @@ export class LlmClient {
   }
 
   async generateVisionText(
+    prompt: string,
+    options: VisionGenerateOptions,
+  ): Promise<string> {
+    const _llmStartMs = Date.now();
+    llmLogger.debug("LLM generateVisionText", {
+      provider: this.config.provider,
+      model: this.config.model,
+      promptLength: prompt.length,
+      imageSizeBytes: options.imageBase64.length,
+      mimeType: options.mimeType,
+      hasSystemPrompt: !!options.system,
+    });
+    try {
+      const result = await this._doGenerateVisionText(prompt, options);
+      llmLogger.debug("LLM generateVisionText done", {
+        provider: this.config.provider,
+        model: this.config.model,
+        responseLength: result.length,
+        durationMs: Date.now() - _llmStartMs,
+      });
+      return result;
+    } catch (err) {
+      llmLogger.debug("LLM generateVisionText error", {
+        provider: this.config.provider,
+        model: this.config.model,
+        durationMs: Date.now() - _llmStartMs,
+        error: (err as Error).message,
+      });
+      throw err;
+    }
+  }
+
+  private async _doGenerateVisionText(
     prompt: string,
     options: VisionGenerateOptions,
   ): Promise<string> {

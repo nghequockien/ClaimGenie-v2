@@ -260,6 +260,7 @@ export interface AgentConfig {
   systemPrompt: string;
   temperature: number;
   maxTokens: number;
+  agentCard: Record<string, any> | null; // Complete Agent Card metadata
   configurable: boolean;
   updatedAt?: string;
 }

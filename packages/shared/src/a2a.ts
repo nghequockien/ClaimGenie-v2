@@ -123,6 +123,10 @@ export class A2AClient {
   private async discoverAgentCard(agent: AgentName): Promise<AgentCard> {
     const cacheHit = this.discoveryCache[agent];
     if (cacheHit && cacheHit.expiresAt > Date.now()) {
+      logger.debug("A2A discovery cache hit", {
+        agent,
+        url: cacheHit.card.url,
+      });
       return cacheHit.card;
     }
 
@@ -158,6 +162,11 @@ export class A2AClient {
         expiresAt: Date.now() + this.discoveryCacheTtlMs,
       };
 
+      logger.debug("A2A agent card discovered", {
+        agent,
+        url: card.url,
+        ttlMs: this.discoveryCacheTtlMs,
+      });
       return card;
     } catch (error) {
       logger.warn("A2A discovery fallback to static route", {
@@ -172,6 +181,7 @@ export class A2AClient {
 
   private async resolveBearerToken(target: AgentCard): Promise<string | null> {
     if (this.tokenResolver) {
+      logger.debug("A2A token via custom resolver", { target: target.name });
       return this.tokenResolver(target);
     }
 
@@ -179,13 +189,22 @@ export class A2AClient {
     const scopedEnvToken = targetAgentName
       ? process.env[`A2A_TOKEN_${targetAgentName}`]
       : undefined;
-    if (scopedEnvToken) return scopedEnvToken;
+    if (scopedEnvToken) {
+      logger.debug("A2A token from env var", { target: target.name });
+      return scopedEnvToken;
+    }
 
     if (target.authentication?.schemes?.includes("Bearer")) {
+      logger.debug("A2A token via OAuth flow", { target: target.name });
       return this.acquireOAuthAccessToken(target);
     }
 
-    return process.env.A2A_BEARER_TOKEN || null;
+    const fallbackToken = process.env.A2A_BEARER_TOKEN || null;
+    logger.debug("A2A token from A2A_BEARER_TOKEN env", {
+      target: target.name,
+      found: !!fallbackToken,
+    });
+    return fallbackToken;
   }
 
   private resolveTargetOAuthValue(
@@ -256,6 +275,14 @@ export class A2AClient {
     const cacheKey = `${tokenEndpoint}|${clientId}|${scope || ""}|${audience || ""}`;
     const cacheHit = this.accessTokenCache[cacheKey];
     if (cacheHit && cacheHit.expiresAt > Date.now()) {
+      logger.debug("A2A OAuth token cache hit", {
+        targetAgent: targetAgentName,
+      });
+      logger.debug("A2A OAuth token cache hit", {
+        targetAgent: targetAgentName,
+        scope: scope || "(none)",
+        audience: audience || "(none)",
+      });
       return cacheHit.accessToken;
     }
 
@@ -329,6 +356,12 @@ export class A2AClient {
         expiresAt,
       };
 
+      logger.debug("A2A OAuth token acquired", {
+        targetAgent: targetAgentName,
+        scope: scope || "(none)",
+        audience: audience || "(none)",
+        expiresAt: new Date(expiresAt).toISOString(),
+      });
       return accessToken;
     } finally {
       clearTimeout(timeout);
@@ -387,6 +420,16 @@ export class A2AClient {
       endpoint: url,
       authSchemes: target.authentication?.schemes,
     });
+    logger.debug("A2A send payload", {
+      toAgent,
+      messageType,
+      timeoutMs,
+      hasBearerToken: !!bearerToken,
+      payloadKeys:
+        payload && typeof payload === "object" && !Array.isArray(payload)
+          ? Object.keys(payload as Record<string, unknown>)
+          : undefined,
+    });
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -409,6 +452,12 @@ export class A2AClient {
       logger.info(`A2A ← ${toAgent}`, {
         messageId: reply.id,
         type: reply.messageType,
+      });
+      logger.debug("A2A reply payload", {
+        fromAgent: reply.fromAgent,
+        toAgent: reply.toAgent,
+        type: reply.messageType,
+        hasPayload: reply.payload !== undefined,
       });
       return reply;
     } catch (err: any) {

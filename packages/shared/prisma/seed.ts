@@ -287,7 +287,7 @@ async function main() {
     });
   }
 
-  // Seed default agent configurations
+  // Seed default agent configurations with complete Agent Card metadata
   const agentConfigs = [
     {
       agentName: "CLAIMS_RECEIVER",
@@ -297,6 +297,55 @@ async function main() {
         "You are an insurance claim processing assistant. Your role is to receive, validate, and dispatch claims to appropriate processing agents.",
       temperature: 0.7,
       maxTokens: 4096,
+      agentCard: JSON.stringify({
+        schemaVersion: "1.0",
+        humanReadableId: "claimgenie/claims-receiver",
+        agentVersion: "1.0.0",
+        name: "Claims Receiver",
+        description:
+          "Entry-point agent that receives incoming insurance claims, validates completeness, and dispatches them to the parallel processing pipeline (OCR, ICD, Verification, Fraud). Also finalises claims after all downstream agents complete.",
+        url: "http://localhost:4000/a2a",
+        provider: {
+          name: "ClaimGenie Insurance",
+          url: "https://claimgenie.example.com",
+          support_contact: "support@claimgenie.example.com",
+        },
+        capabilities: {
+          a2aVersion: "1.0",
+          mcpVersion: "0.6",
+          supportedMessageParts: ["text", "file", "data"],
+          supportsPushNotifications: false,
+        },
+        authSchemes: [
+          {
+            scheme: "oauth2",
+            description: "OAuth2 Client Credentials Grant",
+            tokenUrl: "http://localhost:4001/oauth2/token",
+            scopes: ["a2a.invoke.claims_receiver"],
+            service_identifier: "claimgenie-oauth",
+          },
+        ],
+        skills: [
+          {
+            id: "claims_receiver.receive",
+            name: "Claim Intake & Dispatch",
+            description:
+              "Accepts raw claim submissions, validates required fields, creates a tracking record, and fans out TASK_REQUEST messages to all parallel processing agents.",
+            tags: ["claims", "intake", "dispatch", "orchestration"],
+            examples: ["TASK_REQUEST", "HANDOFF"],
+          },
+          {
+            id: "claims_receiver.finalise",
+            name: "Claim Finalisation",
+            description:
+              "Aggregates results from all processing agents, determines the final claim status (COMPLETED / FAILED), and updates the record.",
+            tags: ["claims", "finalisation", "status"],
+            examples: ["HANDOFF"],
+          },
+        ],
+        tags: ["insurance", "claims", "orchestration", "a2a"],
+        lastUpdated: new Date().toISOString(),
+      }),
     },
     {
       agentName: "OCR_PROCESSOR",
@@ -306,6 +355,47 @@ async function main() {
         "You are an OCR and document processing AI with vision capabilities. Extract text and structured data from insurance claim documents with high accuracy.",
       temperature: 0.3,
       maxTokens: 8192,
+      agentCard: JSON.stringify({
+        schemaVersion: "1.0",
+        humanReadableId: "claimgenie/ocr-processor",
+        agentVersion: "1.0.0",
+        name: "OCR Processor",
+        description:
+          "Processes uploaded claim documents using vision-capable LLMs to extract raw text, structured fields, and metadata from PDFs, images, and scanned forms.",
+        url: "http://localhost:4001/a2a",
+        provider: {
+          name: "ClaimGenie Insurance",
+          url: "https://claimgenie.example.com",
+          support_contact: "support@claimgenie.example.com",
+        },
+        capabilities: {
+          a2aVersion: "1.0",
+          mcpVersion: "0.6",
+          supportedMessageParts: ["text", "file", "data"],
+          supportsPushNotifications: false,
+        },
+        authSchemes: [
+          {
+            scheme: "oauth2",
+            description: "OAuth2 Client Credentials Grant",
+            tokenUrl: "http://localhost:4001/oauth2/token",
+            scopes: ["a2a.invoke.ocr_processor"],
+            service_identifier: "claimgenie-oauth",
+          },
+        ],
+        skills: [
+          {
+            id: "ocr_processor.extract",
+            name: "Document Text Extraction",
+            description:
+              "Applies OCR and LLM vision to extract all text content, form fields, and embedded metadata from claim-related documents.",
+            tags: ["ocr", "vision", "document", "extraction"],
+            examples: ["TASK_REQUEST"],
+          },
+        ],
+        tags: ["insurance", "ocr", "document-processing", "vision", "a2a"],
+        lastUpdated: new Date().toISOString(),
+      }),
     },
     {
       agentName: "ICD_CONVERTER",
@@ -315,6 +405,47 @@ async function main() {
         "You are an ICD-10 medical coding expert. Convert diagnoses and procedures to appropriate ICD-10 codes with proper specificity.",
       temperature: 0.2,
       maxTokens: 2048,
+      agentCard: JSON.stringify({
+        schemaVersion: "1.0",
+        humanReadableId: "claimgenie/icd-converter",
+        agentVersion: "1.0.0",
+        name: "ICD-10 Converter",
+        description:
+          "Converts free-text diagnosis and procedure descriptions into billable ICD-10-CM codes using the ICD MCP server, with confidence scoring and category classification.",
+        url: "http://localhost:4002/a2a",
+        provider: {
+          name: "ClaimGenie Insurance",
+          url: "https://claimgenie.example.com",
+          support_contact: "support@claimgenie.example.com",
+        },
+        capabilities: {
+          a2aVersion: "1.0",
+          mcpVersion: "0.6",
+          supportedMessageParts: ["text", "data"],
+          supportsPushNotifications: false,
+        },
+        authSchemes: [
+          {
+            scheme: "oauth2",
+            description: "OAuth2 Client Credentials Grant",
+            tokenUrl: "http://localhost:4001/oauth2/token",
+            scopes: ["a2a.invoke.icd_converter"],
+            service_identifier: "claimgenie-oauth",
+          },
+        ],
+        skills: [
+          {
+            id: "icd_converter.convert",
+            name: "Diagnosis to ICD-10 Conversion",
+            description:
+              "Maps clinical diagnosis text to the most specific ICD-10-CM codes, including confidence scores and billing flags, via the ICD MCP service.",
+            tags: ["icd-10", "medical-coding", "diagnosis", "mcp"],
+            examples: ["TASK_REQUEST"],
+          },
+        ],
+        tags: ["insurance", "medical-coding", "icd-10", "billing", "a2a"],
+        lastUpdated: new Date().toISOString(),
+      }),
     },
     {
       agentName: "CUSTOMER_VERIFICATION",
@@ -324,6 +455,47 @@ async function main() {
         "You are an insurance customer verification specialist. Verify patient demographics, insurance eligibility, and coverage details.",
       temperature: 0.3,
       maxTokens: 2048,
+      agentCard: JSON.stringify({
+        schemaVersion: "1.0",
+        humanReadableId: "claimgenie/customer-verification",
+        agentVersion: "1.0.0",
+        name: "Customer Verification",
+        description:
+          "Verifies patient identity and insurance eligibility by calling the Verification MCP server. Returns coverage details including deductible status, out-of-pocket limits, and coverage percentage.",
+        url: "http://localhost:4003/a2a",
+        provider: {
+          name: "ClaimGenie Insurance",
+          url: "https://claimgenie.example.com",
+          support_contact: "support@claimgenie.example.com",
+        },
+        capabilities: {
+          a2aVersion: "1.0",
+          mcpVersion: "0.6",
+          supportedMessageParts: ["text", "data"],
+          supportsPushNotifications: false,
+        },
+        authSchemes: [
+          {
+            scheme: "oauth2",
+            description: "OAuth2 Client Credentials Grant",
+            tokenUrl: "http://localhost:4001/oauth2/token",
+            scopes: ["a2a.invoke.customer_verification"],
+            service_identifier: "claimgenie-oauth",
+          },
+        ],
+        skills: [
+          {
+            id: "customer_verification.verify",
+            name: "Patient & Insurance Verification",
+            description:
+              "Checks patient demographics against records and validates insurance policy status, effective dates, and coverage details via the Verification MCP service.",
+            tags: ["verification", "patient", "insurance", "mcp"],
+            examples: ["TASK_REQUEST"],
+          },
+        ],
+        tags: ["insurance", "verification", "eligibility", "customer", "a2a"],
+        lastUpdated: new Date().toISOString(),
+      }),
     },
     {
       agentName: "FRAUD_DETECTION",
@@ -333,6 +505,53 @@ async function main() {
         "You are an insurance fraud detection expert. Analyze claims for suspicious patterns, inconsistencies, and fraud indicators.",
       temperature: 0.4,
       maxTokens: 4096,
+      agentCard: JSON.stringify({
+        schemaVersion: "1.0",
+        humanReadableId: "claimgenie/fraud-detection",
+        agentVersion: "1.0.0",
+        name: "Fraud Detection",
+        description:
+          "Scores each claim for fraud risk using the Fraud MCP server and LLM reasoning. Produces a risk score, severity-tagged flag list, and a recommended action (APPROVE / REVIEW / REJECT).",
+        url: "http://localhost:4004/a2a",
+        provider: {
+          name: "ClaimGenie Insurance",
+          url: "https://claimgenie.example.com",
+          support_contact: "support@claimgenie.example.com",
+        },
+        capabilities: {
+          a2aVersion: "1.0",
+          mcpVersion: "0.6",
+          supportedMessageParts: ["text", "data"],
+          supportsPushNotifications: false,
+        },
+        authSchemes: [
+          {
+            scheme: "oauth2",
+            description: "OAuth2 Client Credentials Grant",
+            tokenUrl: "http://localhost:4001/oauth2/token",
+            scopes: ["a2a.invoke.fraud_detection"],
+            service_identifier: "claimgenie-oauth",
+          },
+        ],
+        skills: [
+          {
+            id: "fraud_detection.score",
+            name: "Fraud Risk Scoring",
+            description:
+              "Analyses claim data for statistical anomalies, duplicate billing patterns, upcoding, and other fraud indicators. Returns a 0–100 risk score and a list of specific flags.",
+            tags: ["fraud", "risk", "scoring", "mcp"],
+            examples: ["TASK_REQUEST"],
+          },
+        ],
+        tags: [
+          "insurance",
+          "fraud-detection",
+          "risk-scoring",
+          "compliance",
+          "a2a",
+        ],
+        lastUpdated: new Date().toISOString(),
+      }),
     },
     {
       agentName: "PAYMENT_GENERATOR",
@@ -342,11 +561,60 @@ async function main() {
         "You are an insurance payment calculation specialist. Calculate appropriate payment amounts based on coverage, deductibles, and policy limits.",
       temperature: 0.2,
       maxTokens: 2048,
+      agentCard: JSON.stringify({
+        schemaVersion: "1.0",
+        humanReadableId: "claimgenie/payment-generator",
+        agentVersion: "1.0.0",
+        name: "Payment Generator",
+        description:
+          "Calculates the final payable amount after applying deductibles, co-insurance, and policy limits. Generates an Explanation of Benefits (EOB) reference and schedules payment. Hands off the completed claim back to Claims Receiver.",
+        url: "http://localhost:4005/a2a",
+        provider: {
+          name: "ClaimGenie Insurance",
+          url: "https://claimgenie.example.com",
+          support_contact: "support@claimgenie.example.com",
+        },
+        capabilities: {
+          a2aVersion: "1.0",
+          mcpVersion: "0.6",
+          supportedMessageParts: ["text", "data"],
+          supportsPushNotifications: false,
+        },
+        authSchemes: [
+          {
+            scheme: "oauth2",
+            description: "OAuth2 Client Credentials Grant",
+            tokenUrl: "http://localhost:4001/oauth2/token",
+            scopes: ["a2a.invoke.payment_generator"],
+            service_identifier: "claimgenie-oauth",
+          },
+        ],
+        skills: [
+          {
+            id: "payment_generator.calculate",
+            name: "Payment Calculation",
+            description:
+              "Computes approved amount, deductible applied, co-insurance, and net payable amount based on the patient's coverage details and claim total.",
+            tags: ["payment", "calculation", "eob", "coverage"],
+            examples: ["TASK_REQUEST"],
+          },
+          {
+            id: "payment_generator.handoff",
+            name: "Claim Handoff",
+            description:
+              "After payment is generated, sends a HANDOFF message back to Claims Receiver to finalise the claim status.",
+            tags: ["handoff", "finalisation"],
+            examples: ["HANDOFF"],
+          },
+        ],
+        tags: ["insurance", "payment", "calculation", "eob", "billing", "a2a"],
+        lastUpdated: new Date().toISOString(),
+      }),
     },
   ];
 
   for (const config of agentConfigs) {
-    await prisma.agentConfig.create({ data: config as any });
+    await (prisma as any).agentConfig.create({ data: config });
     console.log(`✅ Seeded config for: ${config.agentName}`);
   }
 

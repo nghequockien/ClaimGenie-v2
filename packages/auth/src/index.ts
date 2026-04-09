@@ -41,9 +41,49 @@ type OAuthProfile = {
 };
 
 type LoggerLike = {
+  debug: (message: string, details?: unknown) => void;
   info: (message: string, details?: unknown) => void;
   warn: (message: string, details?: unknown) => void;
   error: (message: string, details?: unknown) => void;
+};
+
+type AgentName =
+  | "CLAIMS_RECEIVER"
+  | "OCR_PROCESSOR"
+  | "ICD_CONVERTER"
+  | "CUSTOMER_VERIFICATION"
+  | "FRAUD_DETECTION"
+  | "PAYMENT_GENERATOR";
+
+const AGENT_NAMES: AgentName[] = [
+  "CLAIMS_RECEIVER",
+  "OCR_PROCESSOR",
+  "ICD_CONVERTER",
+  "CUSTOMER_VERIFICATION",
+  "FRAUD_DETECTION",
+  "PAYMENT_GENERATOR",
+];
+
+type A2AOAuthClientConfig = {
+  clientId: string;
+  clientSecret: string;
+  agent: AgentName;
+  allowedScopes: string[];
+  defaultAudience: string;
+};
+
+type OAuthTokenRequest = {
+  grant_type?: string;
+  scope?: string;
+  audience?: string;
+  client_id?: string;
+  client_secret?: string;
+};
+
+type OAuthSigningMaterial = {
+  kid: string;
+  publicJwk: Record<string, unknown>;
+  privateKey: unknown;
 };
 
 export type AuthModuleOptions = {
@@ -58,6 +98,254 @@ const scryptAsync = promisify(crypto.scrypt);
 
 export function createAuthModule(options: AuthModuleOptions) {
   const { prisma, logger, port, uiUrl, adminEmails } = options;
+
+  function normalizeAgentName(value: string | undefined): AgentName | null {
+    if (!value) return null;
+    const normalized = value.trim().toUpperCase().replace(/-/g, "_");
+    return AGENT_NAMES.includes(normalized as AgentName)
+      ? (normalized as AgentName)
+      : null;
+  }
+
+  function normalizeScopeToken(value: string) {
+    return value.trim().replace(/\s+/g, " ");
+  }
+
+  function parseScopes(scope: string | undefined): string[] {
+    if (!scope) return [];
+    return scope
+      .split(" ")
+      .map((item) => normalizeScopeToken(item))
+      .filter(Boolean);
+  }
+
+  function parseCsv(value: string | undefined): string[] {
+    if (!value) return [];
+    return value
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+
+  function resolveAgentEnv(
+    prefix: string,
+    agent: AgentName,
+  ): string | undefined {
+    return (
+      process.env[`${prefix}_${agent}`] || process.env[prefix] || undefined
+    );
+  }
+
+  function buildA2AOAuthClients(): Map<string, A2AOAuthClientConfig> {
+    const clients = new Map<string, A2AOAuthClientConfig>();
+
+    const rawJson = process.env.A2A_OAUTH_CLIENTS_JSON;
+    if (rawJson) {
+      try {
+        const parsed = JSON.parse(rawJson) as Array<{
+          clientId?: string;
+          clientSecret?: string;
+          agent?: string;
+          scopes?: string[];
+          audience?: string;
+        }>;
+
+        parsed.forEach((item) => {
+          const clientId = item.clientId?.trim();
+          const clientSecret = item.clientSecret?.trim();
+          const agent = normalizeAgentName(item.agent);
+          if (!clientId || !clientSecret || !agent) return;
+
+          const configuredScopes = Array.isArray(item.scopes)
+            ? item.scopes.map((scope) => scope.trim()).filter(Boolean)
+            : [];
+
+          clients.set(clientId, {
+            clientId,
+            clientSecret,
+            agent,
+            allowedScopes:
+              configuredScopes.length > 0
+                ? configuredScopes
+                : [`a2a.invoke.${agent.toLowerCase()}`],
+            defaultAudience: item.audience?.trim() || agent,
+          });
+        });
+      } catch {
+        logger.warn("A2A_OAUTH_CLIENTS_JSON is invalid JSON and was ignored");
+      }
+    }
+
+    AGENT_NAMES.forEach((agent) => {
+      const clientId = process.env[`A2A_CLIENT_ID_${agent}`]?.trim();
+      const clientSecret =
+        process.env[`A2A_CLIENT_SECRET_${agent}`]?.trim() ||
+        process.env[`A2A_OAUTH_CLIENT_SECRET_${agent}`]?.trim();
+
+      if (!clientId || !clientSecret) return;
+
+      const defaultScope = resolveAgentEnv("A2A_REQUIRED_SCOPE", agent);
+      const scopeFromEnv = resolveAgentEnv("A2A_OAUTH_SCOPE", agent);
+      const allowedScopes =
+        parseScopes(scopeFromEnv).length > 0
+          ? parseScopes(scopeFromEnv)
+          : defaultScope
+            ? [defaultScope]
+            : [`a2a.invoke.${agent.toLowerCase()}`];
+
+      clients.set(clientId, {
+        clientId,
+        clientSecret,
+        agent,
+        allowedScopes,
+        defaultAudience: resolveAgentEnv("A2A_OAUTH_AUDIENCE", agent) || agent,
+      });
+    });
+
+    logger.debug("A2A OAuth clients ready", { count: clients.size });
+    return clients;
+  }
+
+  function parseBasicAuth(
+    authorizationHeader: string | undefined,
+  ): { clientId: string; clientSecret: string } | null {
+    if (!authorizationHeader) return null;
+    const [scheme, encoded] = authorizationHeader.split(" ");
+    if (scheme?.toLowerCase() !== "basic" || !encoded) return null;
+
+    try {
+      const decoded = Buffer.from(encoded, "base64").toString("utf8");
+      const separator = decoded.indexOf(":");
+      if (separator <= 0) return null;
+      const clientId = decoded.slice(0, separator);
+      const clientSecret = decoded.slice(separator + 1);
+      if (!clientId || !clientSecret) return null;
+      return { clientId, clientSecret };
+    } catch {
+      return null;
+    }
+  }
+
+  function issuerUrl(): string {
+    const configured = process.env.A2A_TOKEN_ISSUER?.trim();
+    if (configured) return configured;
+    return `http://localhost:${port}`;
+  }
+
+  function jwksUri(): string {
+    const configured = process.env.A2A_JWKS_URI?.trim();
+    if (configured) return configured;
+    return `${issuerUrl().replace(/\/$/, "")}/.well-known/jwks.json`;
+  }
+
+  let signingMaterialPromise: Promise<OAuthSigningMaterial> | null = null;
+
+  async function getSigningMaterial(): Promise<OAuthSigningMaterial> {
+    if (signingMaterialPromise) return signingMaterialPromise;
+
+    signingMaterialPromise = (async () => {
+      const jose = await import("jose");
+      const privateKeyPem = process.env.A2A_JWT_PRIVATE_KEY?.trim();
+      const publicKeyPem = process.env.A2A_JWT_PUBLIC_KEY?.trim();
+
+      if (privateKeyPem && publicKeyPem) {
+        const privateKey = await jose.importPKCS8(privateKeyPem, "RS256");
+        const publicKey = await jose.importSPKI(publicKeyPem, "RS256");
+        const publicJwk = await jose.exportJWK(publicKey);
+        const thumbprint = await jose.calculateJwkThumbprint(
+          publicJwk,
+          "sha256",
+        );
+
+        return {
+          kid: thumbprint,
+          publicJwk: {
+            ...publicJwk,
+            kid: thumbprint,
+            use: "sig",
+            alg: "RS256",
+          },
+          privateKey,
+        };
+      }
+
+      logger.warn(
+        "A2A_JWT_PRIVATE_KEY/A2A_JWT_PUBLIC_KEY not configured; generating ephemeral OAuth signing key",
+      );
+      const { privateKey, publicKey } = await jose.generateKeyPair("RS256");
+      const publicJwk = await jose.exportJWK(publicKey);
+      const thumbprint = await jose.calculateJwkThumbprint(publicJwk, "sha256");
+
+      return {
+        kid: thumbprint,
+        publicJwk: { ...publicJwk, kid: thumbprint, use: "sig", alg: "RS256" },
+        privateKey,
+      };
+    })();
+
+    return signingMaterialPromise;
+  }
+
+  async function issueClientCredentialsToken(args: {
+    client: A2AOAuthClientConfig;
+    requestedScope?: string;
+    requestedAudience?: string;
+  }) {
+    const jose = await import("jose");
+    const signingMaterial = await getSigningMaterial();
+    const now = Math.floor(Date.now() / 1000);
+    const expiresInSec = Number(
+      process.env.A2A_OAUTH_ACCESS_TOKEN_TTL_SEC || 300,
+    );
+    const requestedScopes = parseScopes(args.requestedScope);
+    const effectiveScopes =
+      requestedScopes.length > 0
+        ? requestedScopes.filter((scope) =>
+            args.client.allowedScopes.includes(scope),
+          )
+        : args.client.allowedScopes;
+
+    if (effectiveScopes.length === 0) {
+      throw new Error("invalid_scope");
+    }
+
+    const audience =
+      args.requestedAudience?.trim() || args.client.defaultAudience;
+
+    logger.debug("Issuing client_credentials token", {
+      clientId: args.client.clientId,
+      agent: args.client.agent,
+      effectiveScopes,
+      audience,
+      expiresInSec,
+    });
+
+    const accessToken = await new jose.SignJWT({
+      scope: effectiveScopes.join(" "),
+      client_id: args.client.clientId,
+      azp: args.client.clientId,
+    })
+      .setProtectedHeader({
+        alg: "RS256",
+        typ: "JWT",
+        kid: signingMaterial.kid,
+      })
+      .setIssuer(issuerUrl())
+      .setSubject(args.client.clientId)
+      .setAudience(audience)
+      .setIssuedAt(now)
+      .setNotBefore(now)
+      .setExpirationTime(now + Math.max(60, expiresInSec))
+      .setJti(crypto.randomUUID())
+      .sign(signingMaterial.privateKey as any);
+
+    return {
+      access_token: accessToken,
+      token_type: "Bearer",
+      expires_in: Math.max(60, expiresInSec),
+      scope: effectiveScopes.join(" "),
+    };
+  }
 
   async function ensureAuthTables() {
     const provider = (process.env.DATABASE_PROVIDER || "sqlite").toLowerCase();
@@ -146,6 +434,7 @@ export function createAuthModule(options: AuthModuleOptions) {
     const email = args.email.toLowerCase();
     const role: AuthRole = adminEmails.has(email) ? "ADMIN" : "USER";
 
+    logger.debug("OAuth user upsert", { provider: args.provider, email, role });
     const existing = await prisma.$queryRaw<AppUserRow[]>`
       SELECT id, email, full_name, provider, provider_user_id, password_hash, role
       FROM app_users
@@ -217,6 +506,7 @@ export function createAuthModule(options: AuthModuleOptions) {
   }): Promise<SessionUser> {
     const email = normalizeEmail(args.email);
     const role: AuthRole = adminEmails.has(email) ? "ADMIN" : "USER";
+    logger.debug("Local signup attempt", { email, role });
     const existing = await prisma.$queryRaw<AppUserRow[]>`
       SELECT id, email, full_name, provider, provider_user_id, password_hash, role
       FROM app_users
@@ -264,6 +554,7 @@ export function createAuthModule(options: AuthModuleOptions) {
     password: string;
   }): Promise<SessionUser> {
     const email = normalizeEmail(args.email);
+    logger.debug("Local login attempt", { email });
     const existing = await prisma.$queryRaw<AppUserRow[]>`
       SELECT id, email, full_name, provider, provider_user_id, password_hash, role
       FROM app_users
@@ -529,6 +820,90 @@ export function createAuthModule(options: AuthModuleOptions) {
   }
 
   function registerRoutes(app: express.Express) {
+    app.get("/.well-known/jwks.json", async (_req, res) => {
+      try {
+        const signingMaterial = await getSigningMaterial();
+        res.json({ keys: [signingMaterial.publicJwk] });
+      } catch (error) {
+        logger.error("Failed to load JWKS", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        res.status(500).json({ error: "jwks_unavailable" });
+      }
+    });
+
+    app.get("/.well-known/oauth-authorization-server", (_req, res) => {
+      const issuer = issuerUrl().replace(/\/$/, "");
+      res.json({
+        issuer,
+        jwks_uri: jwksUri(),
+        token_endpoint: `${issuer}/oauth2/token`,
+        token_endpoint_auth_methods_supported: [
+          "client_secret_post",
+          "client_secret_basic",
+        ],
+        grant_types_supported: ["client_credentials"],
+      });
+    });
+
+    app.post(
+      "/oauth2/token",
+      express.urlencoded({ extended: false }),
+      async (req, res) => {
+        try {
+          const body = req.body as OAuthTokenRequest;
+          if (body.grant_type !== "client_credentials") {
+            return res.status(400).json({ error: "unsupported_grant_type" });
+          }
+
+          const basic = parseBasicAuth(req.headers.authorization);
+          const clientId =
+            basic?.clientId ||
+            (body.client_id ? String(body.client_id).trim() : "");
+          const clientSecret =
+            basic?.clientSecret ||
+            (body.client_secret ? String(body.client_secret).trim() : "");
+
+          if (!clientId || !clientSecret) {
+            return res.status(401).json({ error: "invalid_client" });
+          }
+
+          logger.debug("OAuth /token request", {
+            grantType: body.grant_type,
+            clientId: clientId || "(missing)",
+            requestedScope: body.scope || "(none)",
+            requestedAudience: body.audience || "(none)",
+            authMethod: basic ? "basic" : "post",
+          });
+
+          const clients = buildA2AOAuthClients();
+          const client = clients.get(clientId);
+          if (!client || client.clientSecret !== clientSecret) {
+            return res.status(401).json({ error: "invalid_client" });
+          }
+
+          const token = await issueClientCredentialsToken({
+            client,
+            requestedScope: body.scope,
+            requestedAudience: body.audience,
+          });
+
+          return res.status(200).json(token);
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : String(error);
+          if (message === "invalid_scope") {
+            return res.status(400).json({ error: "invalid_scope" });
+          }
+
+          logger.error("OAuth client credentials token issuance failed", {
+            error: message,
+          });
+          return res.status(500).json({ error: "server_error" });
+        }
+      },
+    );
+
     app.get("/api/auth/me", (req, res) => {
       if (!req.session?.user) {
         return res.json({ authenticated: false, user: null });
